@@ -47,6 +47,17 @@ class BotRequest(BaseModel):
 class BotResponse(BaseModel):
     reply: str
 
+# 設定定数
+QUESTION_MAX_LENGTH = 500  # 質問文字数の上限
+
+def validate_prompt_length(prompt: str) -> None:
+    """質問文字数をチェックし、超過時は例外を発生"""
+    if len(prompt) > QUESTION_MAX_LENGTH:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"質問が長すぎます。{QUESTION_MAX_LENGTH}文字以内で入力してください。（現在: {len(prompt)}文字）"
+        )
+
 @router.get("/health")
 async def health():
     return {"status": "ok", "service": "kitakyushu-waste-chatbot"}
@@ -55,6 +66,9 @@ async def health():
 @router.post("/chat/blocking")
 async def chat_blocking(req: ChatRequest):
     try:
+        # 文字数制限チェック
+        validate_prompt_length(req.prompt)
+        
         rag = get_rag_service()
         res = rag.blocking_query(req.prompt, k=5)
 
@@ -87,6 +101,9 @@ async def chat_blocking(req: ChatRequest):
 @router.post("/chat/streaming")
 async def chat_streaming(req: ChatRequest):
     try:
+        # 文字数制限チェック
+        validate_prompt_length(req.prompt)
+        
         rag = get_rag_service()
         start = time.time()
 
@@ -135,6 +152,9 @@ async def chat_streaming(req: ChatRequest):
 # ====== 後半課題の Blocking API 仕様 ======
 @router.post("/bot/respond", response_model=BotResponse)
 async def bot_respond(req: BotRequest):
+    # 文字数制限チェック
+    validate_prompt_length(req.prompt)
+    
     rag = get_rag_service()
     res = rag.blocking_query(req.prompt, k=5)
 
@@ -154,6 +174,9 @@ async def bot_respond(req: BotRequest):
 # ====== 後半課題の Streaming API 仕様 ======
 @router.post("/bot/stream")
 async def bot_stream(req: BotRequest):
+    # 文字数制限チェック
+    validate_prompt_length(req.prompt)
+    
     rag = get_rag_service()
     start = time.time()
 
@@ -192,3 +215,65 @@ async def bot_stream(req: BotRequest):
             "Content-Type":"text/event-stream; charset=utf-8"
         },
     )
+
+# ====== データソース管理API ======
+@router.get("/data/sources")
+async def get_data_sources():
+    """データソース一覧を取得"""
+    try:
+        rag = get_rag_service()
+        result = rag.get_data_sources()
+        return result
+    except Exception as e:
+        logger.error(f"データソース取得エラー: {e}")
+        raise HTTPException(status_code=500, detail=f"データソース取得エラー: {str(e)}")
+
+@router.get("/data/samples")
+async def get_sample_documents(source: Optional[str] = None, limit: int = 10):
+    """サンプルドキュメントを取得"""
+    try:
+        if limit > 50:  # 上限設定
+            limit = 50
+        rag = get_rag_service()
+        result = rag.get_sample_documents(source=source, limit=limit)
+        return result
+    except Exception as e:
+        logger.error(f"サンプルドキュメント取得エラー: {e}")
+        raise HTTPException(status_code=500, detail=f"サンプルドキュメント取得エラー: {str(e)}")
+
+class DataSearchRequest(BaseModel):
+    query: str
+    limit: Optional[int] = 10
+
+@router.post("/data/search")
+async def search_documents(request: DataSearchRequest):
+    """ドキュメント検索（RAG検索と同じエンジンを使用）"""
+    try:
+        rag = get_rag_service()
+        docs = rag.similarity_search(request.query, k=request.limit)
+        
+        # ドキュメントを整理して返す
+        formatted_docs = []
+        for doc in docs:
+            lines = doc.page_content.split('\n')
+            parsed_doc = {}
+            for line in lines:
+                if ':' in line:
+                    key, value = line.split(':', 1)
+                    parsed_doc[key.strip()] = value.strip()
+            
+            formatted_docs.append({
+                'source': doc.metadata.get('source', 'unknown'),
+                'content': parsed_doc,
+                'raw_content': doc.page_content[:200] + '...' if len(doc.page_content) > 200 else doc.page_content
+            })
+        
+        return {
+            'success': True,
+            'query': request.query,
+            'documents': formatted_docs,
+            'count': len(formatted_docs)
+        }
+    except Exception as e:
+        logger.error(f"ドキュメント検索エラー: {e}")
+        raise HTTPException(status_code=500, detail=f"ドキュメント検索エラー: {str(e)}")

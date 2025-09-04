@@ -15,6 +15,9 @@ from datetime import datetime
 from typing import List, Dict, Any, AsyncGenerator
 import asyncio
 
+# ChromaDBテレメトリを無効化
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
 import pandas as pd
 import ollama
 from langchain_core.documents import Document
@@ -226,6 +229,17 @@ class KitakyushuWasteRAGService:
     def add_csv(self, filepath: str) -> Dict[str, Any]:
         if not os.path.exists(filepath):
             return {"success": False, "error": f"CSVが見つかりません: {filepath}"}
+            
+        # 重複チェック: 既存データソースを確認
+        filename = os.path.basename(filepath)
+        existing_sources = self.get_data_sources()
+        
+        if existing_sources.get("success"):
+            for source in existing_sources.get("sources", []):
+                if source.get("file_name") == filename:
+                    self.logger.warning(f"CSV重複スキップ: {filename} は既に登録済み")
+                    return {"success": True, "count": 0, "message": f"ファイル '{filename}' は既に登録済みです"}
+        
         try:
             df = pd.read_csv(filepath, encoding="utf-8")
         except UnicodeDecodeError:
@@ -235,7 +249,7 @@ class KitakyushuWasteRAGService:
         for _, row in df.iterrows():
             text = self._row_to_text(row)
             if text:
-                docs.append(Document(page_content=text, metadata={"source": os.path.basename(filepath)}))
+                docs.append(Document(page_content=text, metadata={"source": filename}))
         if docs:
             self.vectorstore.add_documents(docs)
             self.logger.info(f"CSV取り込み: {filepath} | 文書数={len(docs)}")
@@ -389,15 +403,18 @@ class KitakyushuWasteRAGService:
         ctx = self._format_docs(docs)
 
         prompt = (
-            "あなたは北九州市のごみ分別案内の専門AIです。"
+            "あなたは北九州市のごみ分別案内の専門AIアシスタントです。"
+            "北九州市民の皆様に正確で分かりやすいごみ分別情報を提供することが使命です。"
             "以下の参照データの範囲内で、日本語で簡潔かつ正確に回答してください。"
-            "最優先で「出し方」を特定して、そのままの表記で出力する。次に「備考」があれば補足する。"
-            "重要なルール:"
-            "1. 質問された品目に関連する情報のみを回答してください（関係ない品目の情報は含めないでください）"
-            "2. データベースに該当する情報がない場合は「申し訳ございませんが、該当する情報がありません。北九州市のホームページでご確認いただくか、お住まいの区役所にお問い合わせください。」と回答してください"
-            "3. 回答は簡潔で分かりやすく、出し方と備考を含めてください"
-            "4. 推測や一般的なアドバイスは避け、データに基づいた正確な情報のみを提供してください"
-            "5. 複数の関連品目がある場合は、質問に最も関連するもののみを優先して回答してください"
+            "\n回答形式:"
+            "「出し方: [具体的な分別方法]」を最初に明記し、必要に応じて「備考: [追加情報]」を補足してください。"
+            "\n重要なルール:"
+            "1. 質問された品目に関連する情報のみを回答してください（無関係な品目情報は含めない）"
+            "2. データベースに該当情報がない場合は「申し訳ございませんが、該当する情報がありません。北九州市のホームページ（https://www.city.kitakyushu.lg.jp/）でご確認いただくか、お住まいの区役所環境課にお問い合わせください。」と回答してください"
+            "3. 回答は簡潔で分かりやすく、必ず「出し方」を含めてください"
+            "4. 推測や一般的なアドバイスは厳禁です。データベースに基づいた正確な情報のみを提供してください"
+            "5. 複数の関連品目がある場合は、質問に最も適合するもののみを選んで回答してください"
+            "6. エリア情報がある場合は、該当する地区名も併記してください"
             "\n\n質問:\n"
             f"{clean_text(query)}\n\n参照データ:\n{ctx}\n\n回答:"
         )
@@ -417,15 +434,18 @@ class KitakyushuWasteRAGService:
         ctx = self._format_docs(docs)
 
         prompt = (
-            "あなたは北九州市のごみ分別案内の専門AIです。"
+            "あなたは北九州市のごみ分別案内の専門AIアシスタントです。"
+            "北九州市民の皆様に正確で分かりやすいごみ分別情報を提供することが使命です。"
             "以下の参照データの範囲内で、日本語で簡潔かつ正確に回答してください。"
-            "最優先で「出し方」を特定して、そのままの表記で出力する。次に「備考」があれば補足する。"
-            "重要なルール:"
-            "1. 質問された品目に関連する情報のみを回答してください（関係ない品目の情報は含めないでください）"
-            "2. データベースに該当する情報がない場合は「申し訳ございませんが、該当する情報がありません。北九州市のホームページでご確認いただくか、お住まいの区役所にお問い合わせください。」と回答してください"
-            "3. 回答は簡潔で分かりやすく、出し方と備考を含めてください"
-            "4. 推測や一般的なアドバイスは避け、データに基づいた正確な情報のみを提供してください"
-            "5. 複数の関連品目がある場合は、質問に最も関連するもののみを優先して回答してください"
+            "\n回答形式:"
+            "「出し方: [具体的な分別方法]」を最初に明記し、必要に応じて「備考: [追加情報]」を補足してください。"
+            "\n重要なルール:"
+            "1. 質問された品目に関連する情報のみを回答してください（無関係な品目情報は含めない）"
+            "2. データベースに該当情報がない場合は「申し訳ございませんが、該当する情報がありません。北九州市のホームページ（https://www.city.kitakyushu.lg.jp/）でご確認いただくか、お住まいの区役所環境課にお問い合わせください。」と回答してください"
+            "3. 回答は簡潔で分かりやすく、必ず「出し方」を含めてください"
+            "4. 推測や一般的なアドバイスは厳禁です。データベースに基づいた正確な情報のみを提供してください"
+            "5. 複数の関連品目がある場合は、質問に最も適合するもののみを選んで回答してください"
+            "6. エリア情報がある場合は、該当する地区名も併記してください"
             f"\n\n質問:\n{clean_text(query)}\n\n参照データ:\n{ctx}\n\n回答:"
         )
 
@@ -450,6 +470,112 @@ class KitakyushuWasteRAGService:
                     yield content
         except Exception as e:
             yield f"エラー: {e}"
+
+    def get_data_sources(self) -> Dict[str, Any]:
+        """データソースの一覧と統計情報を取得"""
+        try:
+            # ChromaDBから全ドキュメントのメタデータを取得
+            collection = self.vectorstore._collection
+            all_data = collection.get(include=['metadatas', 'documents'])
+            
+            # ソース別の統計を作成
+            source_stats = {}
+            total_documents = len(all_data['documents'])
+            
+            for i, metadata in enumerate(all_data['metadatas']):
+                source = metadata.get('source', 'unknown')
+                if source not in source_stats:
+                    source_stats[source] = {
+                        'file_name': source,
+                        'document_count': 0,
+                        'sample_content': [],
+                        'last_updated': metadata.get('last_updated', 'N/A')
+                    }
+                
+                source_stats[source]['document_count'] += 1
+                
+                # サンプルコンテンツを保存（最初の3つまで）
+                if len(source_stats[source]['sample_content']) < 3:
+                    doc_content = all_data['documents'][i]
+                    if doc_content:
+                        # 品目名を抽出
+                        lines = doc_content.split('\n')
+                        item_line = next((line for line in lines if line.startswith('品目:')), '')
+                        if item_line:
+                            item_name = item_line.replace('品目:', '').strip()
+                            source_stats[source]['sample_content'].append(item_name)
+            
+            return {
+                'success': True,
+                'total_documents': total_documents,
+                'total_sources': len(source_stats),
+                'sources': list(source_stats.values()),
+                'timestamp': datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            self.logger.error(f"データソース取得エラー: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'total_documents': 0,
+                'total_sources': 0,
+                'sources': []
+            }
+
+    def get_sample_documents(self, source: str = None, limit: int = 10) -> Dict[str, Any]:
+        """指定されたソースからサンプルドキュメントを取得"""
+        try:
+            collection = self.vectorstore._collection
+            
+            if source:
+                # 特定のソースからドキュメントを取得
+                all_data = collection.get(
+                    where={"source": source},
+                    include=['metadatas', 'documents'],
+                    limit=limit
+                )
+            else:
+                # 全ソースからサンプルを取得
+                all_data = collection.get(
+                    include=['metadatas', 'documents'],
+                    limit=limit
+                )
+            
+            documents = []
+            for i, doc_content in enumerate(all_data['documents']):
+                metadata = all_data['metadatas'][i]
+                
+                # ドキュメントから情報を抽出
+                lines = doc_content.split('\n')
+                parsed_doc = {}
+                for line in lines:
+                    if ':' in line:
+                        key, value = line.split(':', 1)
+                        parsed_doc[key.strip()] = value.strip()
+                
+                documents.append({
+                    'source': metadata.get('source', 'unknown'),
+                    'content': parsed_doc,
+                    'raw_content': doc_content[:200] + '...' if len(doc_content) > 200 else doc_content
+                })
+            
+            return {
+                'success': True,
+                'documents': documents,
+                'count': len(documents),
+                'source_filter': source
+            }
+            
+        except Exception as e:
+            self.logger.error(f"サンプルドキュメント取得エラー: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'documents': [],
+                'count': 0
+            }
+
 # ======= シングルトン =======
 _rag = None
 def get_rag_service() -> KitakyushuWasteRAGService:

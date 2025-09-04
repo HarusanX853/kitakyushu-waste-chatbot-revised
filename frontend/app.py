@@ -21,6 +21,7 @@ CHAT_STREAM = f"{BACKEND_URL}/chat/streaming"
 UPLOAD_API = f"{BACKEND_URL}/upload"
 GPU_API = f"{BACKEND_URL}/monitor/gpu"
 HEALTH_API = f"{BACKEND_URL}/health"
+DATA_SOURCES_API = f"{BACKEND_URL}/data/sources"
 
 # 会话状態の初期化
 if "history" not in st.session_state:
@@ -44,6 +45,7 @@ if "gpu_auto_update" not in st.session_state:
 CHAT_HISTORY_LIMIT = 50  # 履歴保存の上限
 CHAT_DISPLAY_LIMIT = 10  # 表示件数の上限
 STATS_HISTORY_LIMIT = 100  # 統計履歴の上限
+QUESTION_MAX_LENGTH = 500  # 質問文字数の上限
 
 # チャット履歴の自動クリーンアップ
 def cleanup_chat_history():
@@ -71,6 +73,48 @@ def get_gpu_status():
         return response.json()
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+# ナレッジファイル一覧を取得する関数
+@st.cache_data(ttl=60)  # 60秒間キャッシュ
+def get_knowledge_files():
+    """ナレッジファイル一覧を取得"""
+    try:
+        response = requests.get(DATA_SOURCES_API, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        return data.get('sources', [])
+    except Exception as e:
+        st.error(f"ナレッジファイル一覧の取得に失敗しました: {e}")
+        return []
+
+def display_knowledge_files():
+    """ナレッジファイル一覧を表示"""
+    files = get_knowledge_files()
+    if files:
+        st.markdown("**📋 登録済みナレッジファイル**")
+        for i, file_info in enumerate(files):
+            if isinstance(file_info, dict):
+                filename = file_info.get('file_name', 'Unknown')
+                doc_count = file_info.get('document_count', 0)
+                last_updated = file_info.get('last_updated', 'N/A')
+                sample_content = file_info.get('sample_content', [])
+                
+                # カード形式で表示
+                st.markdown(f"""
+                <div style="border: 1px solid #ddd; border-radius: 5px; padding: 10px; margin: 5px 0; background-color: #f9f9f9;">
+                    <h4 style="margin: 0; color: #333;">📄 {filename}</h4>
+                    <p style="margin: 5px 0; color: #666;">
+                        <strong>文書数:</strong> {doc_count} | 
+                        <strong>更新日:</strong> {last_updated}
+                    </p>
+                    {f'<p style="margin: 5px 0; color: #666;"><strong>サンプル:</strong> {", ".join(sample_content[:3])}</p>' if sample_content else ''}
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                # 文字列の場合（後方互換性）
+                st.caption(f"📄 {file_info}")
+    else:
+        st.info("📭 まだナレッジファイルが登録されていません")
 
 def should_update_gpu():
     """GPU情報を更新すべきかチェック（5秒間隔）"""
@@ -605,8 +649,15 @@ if is_mobile:
                     r.raise_for_status()
                     st.success(f"✅ アップロード成功!")
                     st.json(r.json())
+                    # キャッシュをクリアして最新のファイル一覧を取得
+                    get_knowledge_files.clear()
                 except Exception as e:
                     st.error(f"❌ アップロード失敗: {e}")
+        
+        # ナレッジファイル一覧を表示
+        st.markdown("---")
+        display_knowledge_files()
+        
         st.markdown('</div>', unsafe_allow_html=True)
     
     st.markdown('</div>', unsafe_allow_html=True)
@@ -632,8 +683,15 @@ elif is_tablet:
                         r.raise_for_status()
                         st.success(f"✅ アップロード成功!")
                         st.json(r.json())
+                        # キャッシュをクリアして最新のファイル一覧を取得
+                        get_knowledge_files.clear()
                     except Exception as e:
                         st.error(f"❌ アップロード失敗: {e}")
+            
+            # ナレッジファイル一覧を表示
+            st.markdown("---")
+            display_knowledge_files()
+            
             st.markdown('</div>', unsafe_allow_html=True)
     
     st.markdown('</div>', unsafe_allow_html=True)
@@ -664,8 +722,15 @@ else:
                             r.raise_for_status()
                             st.success(f"✅ アップロード成功!")
                             st.json(r.json())
+                            # キャッシュをクリアして最新のファイル一覧を取得
+                            get_knowledge_files.clear()
                         except Exception as e:
                             st.error(f"❌ アップロード失敗: {e}")
+            
+            # ナレッジファイル一覧を表示
+            st.markdown("---")
+            display_knowledge_files()
+            
             st.markdown('</div>', unsafe_allow_html=True)
     
     st.markdown('</div>', unsafe_allow_html=True)
@@ -783,6 +848,9 @@ with st.sidebar:
         **チャット履歴制限:**
         - 保存上限: {CHAT_HISTORY_LIMIT // 2}会話 ({CHAT_HISTORY_LIMIT}メッセージ)
         - 表示上限: {CHAT_DISPLAY_LIMIT // 2}会話 ({CHAT_DISPLAY_LIMIT}メッセージ)
+        
+        **質問文字数制限:**
+        - 1回の質問: {QUESTION_MAX_LENGTH}文字以内
         
         **統計履歴制限:**
         - 保存上限: {STATS_HISTORY_LIMIT}件
@@ -913,8 +981,19 @@ st.markdown('<div class="chat-input">', unsafe_allow_html=True)
 q = st.text_input(
     "質問（例：アルミ缶はどう捨てますか？）",
     placeholder="ごみの分別について質問してください...",
-    help="🔍 ヒント: 「ペットボトル」「生ごみ」「電池」などで検索できます"
+    help="🔍 ヒント: 「ペットボトル」「生ごみ」「電池」などで検索できます",
+    max_chars=QUESTION_MAX_LENGTH
 )
+
+# 文字数カウンター表示
+if q:
+    char_count = len(q)
+    remaining = QUESTION_MAX_LENGTH - char_count
+    if remaining >= 0:
+        st.caption(f"文字数: {char_count}/{QUESTION_MAX_LENGTH} (残り{remaining}文字)")
+    else:
+        st.error(f"⚠️ 文字数超過: {char_count}/{QUESTION_MAX_LENGTH} ({-remaining}文字超過)")
+
 st.markdown('</div>', unsafe_allow_html=True)
 
 # 送信ボタンをレスポンシブに
@@ -926,55 +1005,59 @@ else:
     send_button = st.button("送信", type="primary")
 
 if send_button and q.strip():
-    # 生成時間表示用のプレースホルダー（レスポンシブ対応）
-    if is_mobile:
-        # モバイル：縦配置
-        response_area = st.empty()
-        time_display = st.empty()
+    # 文字数制限チェック
+    if len(q) > QUESTION_MAX_LENGTH:
+        st.error(f"❌ 質問が長すぎます。{QUESTION_MAX_LENGTH}文字以内で入力してください。（現在: {len(q)}文字）")
     else:
-        # デスクトップ：横配置
-        col1, col2 = st.columns([3, 1])
-        with col1:
+        # 生成時間表示用のプレースホルダー（レスポンシブ対応）
+        if is_mobile:
+            # モバイル：縦配置
             response_area = st.empty()
-        with col2:
             time_display = st.empty()
-    
-    t0 = time.time()
-    try:
-        if mode == "blocking":
-            # ブロッキングモードでも時間表示
-            time_display.metric("⏱️ 生成時間", "計測中...", delta="処理開始")
-            data = chat_blocking(q)
-            ans = data.get("response", "")
-            response_area.markdown(ans)
         else:
-            data = chat_streaming(q, response_area, time_display)
+            # デスクトップ：横配置
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                response_area = st.empty()
+            with col2:
+                time_display = st.empty()
+        
+        t0 = time.time()
+        try:
+            if mode == "blocking":
+                # ブロッキングモードでも時間表示
+                time_display.metric("⏱️ 生成時間", "計測中...", delta="処理開始")
+                data = chat_blocking(q)
+                ans = data.get("response", "")
+                response_area.markdown(ans)
+            else:
+                data = chat_streaming(q, response_area, time_display)
             ans = data.get("response", "")
-        
-        # 最終時間計算と表示
-        final_time = time.time() - t0
-        time_display.metric("✅ 生成完了", f"{final_time:.2f}秒", delta="完了!")
-        
-        # 統計に追加
-        st.session_state.generation_stats.append(final_time)
-        
-        # 履歴に追加
-        st.session_state.history.append({"role": "user", "text": q})
-        st.session_state.history.append({"role": "assistant", "text": ans, "latency": final_time})
-        
-        # 履歴と統計のクリーンアップ
-        history_cleaned = cleanup_chat_history()
-        stats_cleaned = cleanup_stats_history()
-        
-        # 成功メッセージ
-        success_msg = f"✨ 回答生成完了！ 生成時間: {final_time:.2f}秒"
-        if history_cleaned or stats_cleaned:
-            success_msg += f"\n📝 履歴管理: 保存上限により古いデータを整理しました"
-        st.success(success_msg)
-        
-    except Exception as e:
-        time_display.error("❌ エラー発生")
-        st.error(f"エラー: {e}")
+            
+            # 最終時間計算と表示
+            final_time = time.time() - t0
+            time_display.metric("✅ 生成完了", f"{final_time:.2f}秒", delta="完了!")
+            
+            # 統計に追加
+            st.session_state.generation_stats.append(final_time)
+            
+            # 履歴に追加
+            st.session_state.history.append({"role": "user", "text": q})
+            st.session_state.history.append({"role": "assistant", "text": ans, "latency": final_time})
+            
+            # 履歴と統計のクリーンアップ
+            history_cleaned = cleanup_chat_history()
+            stats_cleaned = cleanup_stats_history()
+            
+            # 成功メッセージ
+            success_msg = f"✨ 回答生成完了！ 生成時間: {final_time:.2f}秒"
+            if history_cleaned or stats_cleaned:
+                success_msg += f"\n📝 履歴管理: 保存上限により古いデータを整理しました"
+            st.success(success_msg)
+            
+        except Exception as e:
+            time_display.error("❌ エラー発生")
+            st.error(f"エラー: {e}")
 
 # 質問履歴（レスポンシブ対応）
 if st.session_state.history:

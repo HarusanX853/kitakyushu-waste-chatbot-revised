@@ -3,12 +3,15 @@
 要件定義書対応: FastAPI + RAG + GPU監視
 """
 
+import os
+# ChromaDBテレメトリを無効化
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import uvicorn
-import os
 from datetime import datetime
 
 # API ルーター
@@ -77,7 +80,7 @@ async def health_check():
     """ヘルスチェック"""
     try:
         # RAGサービスの状態確認
-        from services.rag_service import get_rag_service
+        from backend.services.rag_service import get_rag_service
         rag_service = get_rag_service()
         
         return {
