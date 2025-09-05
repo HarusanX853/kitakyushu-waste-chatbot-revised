@@ -15,12 +15,12 @@ import uvicorn
 from datetime import datetime
 
 # API ルーター
-from backend.api.chat import router as chat_router
-from backend.api.upload import router as upload_router
-from backend.api.monitor import router as monitor_router
+from api.chat import router as chat_router
+from api.upload import router as upload_router
+from api.monitor import router as monitor_router
 
 # サービス
-from backend.services.logger import setup_logger
+from services.logger import setup_logger
 
 # ログ設定
 logger = setup_logger(__name__)
@@ -80,7 +80,7 @@ async def health_check():
     """ヘルスチェック"""
     try:
         # RAGサービスの状態確認
-        from backend.services.rag_service import get_rag_service
+        from services.rag_service import get_rag_service
         rag_service = get_rag_service()
         
         return {

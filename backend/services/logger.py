@@ -10,3 +10,7 @@ def setup_logger(name: str):
                   logging.StreamHandler()]
     )
     return logging.getLogger(name)
+
+def get_logger(name: str):
+    """ロガーを取得する関数"""
+    return logging.getLogger(name)

@@ -15,8 +15,8 @@ from datetime import datetime
 import asyncio
 
 
-from backend.services.rag_service import get_rag_service
-from backend.services.logger import setup_logger
+from services.rag_service import get_rag_service
+from services.logger import setup_logger
 
 router = APIRouter()
 logger = setup_logger(__name__)
@@ -40,9 +40,11 @@ def _append_chat_log(entry: dict) -> None:
 # ====== スキーマ ======
 class ChatRequest(BaseModel):
     prompt: str
+    use_hybrid: bool = True  # ハイブリッド検索を使用するかどうか
 
 class BotRequest(BaseModel):
     prompt: str
+    use_hybrid: bool = True  # ハイブリッド検索を使用するかどうか
 
 class BotResponse(BaseModel):
     reply: str
@@ -62,6 +64,17 @@ def validate_prompt_length(prompt: str) -> None:
 async def health():
     return {"status": "ok", "service": "kitakyushu-waste-chatbot"}
 
+@router.get("/search/hybrid-stats")
+async def get_hybrid_search_stats():
+    """ハイブリッド検索の統計情報を取得"""
+    try:
+        rag = get_rag_service()
+        stats = rag.get_hybrid_search_stats()
+        return stats
+    except Exception as e:
+        logger.error(f"hybrid stats error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ====== Blocking ======
 @router.post("/chat/blocking")
 async def chat_blocking(req: ChatRequest):
@@ -70,7 +83,7 @@ async def chat_blocking(req: ChatRequest):
         validate_prompt_length(req.prompt)
         
         rag = get_rag_service()
-        res = rag.blocking_query(req.prompt, k=5)
+        res = rag.blocking_query(req.prompt, k=5, use_hybrid=req.use_hybrid)
 
         payload = {
             "response": res["response"],
@@ -78,6 +91,8 @@ async def chat_blocking(req: ChatRequest):
             "timestamp": res["timestamp"],
             "context_found": res.get("documents", 0) > 0,
             "source_documents": res.get("documents", 0),
+            "search_method": res.get("search_method", "unknown"),
+            "hybrid_enabled": res.get("hybrid_enabled", False),
             "mode": "blocking",
         }
 
@@ -90,6 +105,9 @@ async def chat_blocking(req: ChatRequest):
             "latency": res["latency"],
             "context_found": payload["context_found"],
             "source_documents": payload["source_documents"],
+            "search_method": payload["search_method"],
+            "hybrid_enabled": payload["hybrid_enabled"],
+            "use_hybrid_request": req.use_hybrid,
         })
 
         return payload
@@ -109,7 +127,7 @@ async def chat_streaming(req: ChatRequest):
 
         async def gen():
             full = ""
-            async for chunk in rag.streaming_query(req.prompt, k=5):
+            async for chunk in rag.streaming_query(req.prompt, k=5, use_hybrid=req.use_hybrid):
                 full += chunk
                 yield f"data: {json.dumps({'type':'chunk','content':chunk}, ensure_ascii=False)}\n\n"
                 await asyncio.sleep(0)
@@ -117,7 +135,9 @@ async def chat_streaming(req: ChatRequest):
                 "type": "complete",
                 "response": full,
                 "latency": time.time() - start,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "hybrid_enabled": rag.hybrid_retriever is not None,
+                "search_method": "hybrid" if req.use_hybrid and rag.hybrid_retriever else "vector_only"
             }
 
             # 追加: ログ保存（完了時にまとめて1件分を保存）

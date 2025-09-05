@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from backend.services.gpu_moniter import GPUMonitor  # 改成带前缀 backend.
+from services.gpu_moniter import GPUMonitor  # 相対インポートに修正
 
 router = APIRouter()
 

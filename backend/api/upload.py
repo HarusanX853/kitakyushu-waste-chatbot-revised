@@ -1,7 +1,7 @@
 import os
 from fastapi import APIRouter, UploadFile, File, HTTPException
 
-from backend.services.rag_service import get_rag_service
+from services.rag_service import get_rag_service
 
 router = APIRouter()
 

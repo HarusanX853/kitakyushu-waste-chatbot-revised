@@ -24,7 +24,16 @@ from langchain_core.documents import Document
 from langchain_chroma import Chroma
 from langchain_ollama import OllamaEmbeddings
 
-from backend.services.logger import setup_logger
+from .logger import setup_logger, get_logger
+
+# BM25ハイブリッド検索用インポート
+from rank_bm25 import BM25Okapi
+import jieba
+import re
+from collections import defaultdict
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from typing import Tuple, Union
 
 # ===== 環境変数 / 既定値 =====
 EMBED_MODEL = os.getenv("EMBED_MODEL", "bge-m3:latest")
@@ -148,6 +157,223 @@ class BGEInstructEmbeddings:
     def embed_query(self, text: str) -> List[float]:
         return self.inner.embed_query(f"query: {clean_text(text)}")
 
+# ===== ハイブリッド検索クラス =====
+class HybridRetriever:
+    """
+    BM25（キーワードベース）とBGE-M3（セマンティック）を組み合わせたハイブリッド検索
+    """
+    
+    def __init__(self, chroma_retriever, documents: List[Document], alpha: float = 0.5):
+        """
+        Args:
+            chroma_retriever: ChromaDBのベクトル検索インスタンス
+            documents: 全てのドキュメント
+            alpha: ハイブリッド重み (0.0=BM25のみ, 1.0=ベクトル検索のみ)
+        """
+        self.chroma_retriever = chroma_retriever
+        self.documents = documents
+        self.alpha = alpha
+        self.logger = get_logger(__name__)  # ロガーを追加
+        
+        # BM25用の日本語トークナイザー設定
+        self.tokenizer = self._setup_tokenizer()
+        
+        # BM25インデックス構築
+        self.bm25 = self._build_bm25_index()
+        
+        # ドキュメントIDマッピング
+        self.doc_id_to_index = {doc.metadata.get('id', i): i for i, doc in enumerate(documents)}
+        
+        self.logger = setup_logger(__name__)
+    
+    def _setup_tokenizer(self):
+        """日本語用トークナイザーの設定"""
+        def japanese_tokenizer(text: str) -> List[str]:
+            # jiebaによる日本語分割
+            tokens = list(jieba.cut(text, cut_all=False))
+            
+            # 追加の前処理
+            processed_tokens = []
+            for token in tokens:
+                token = token.strip()
+                if len(token) >= 1 and not re.match(r'^[、。！？\s]+$', token):
+                    processed_tokens.append(token.lower())
+            
+            return processed_tokens
+        
+        return japanese_tokenizer
+    
+    def _build_bm25_index(self) -> BM25Okapi:
+        """BM25インデックスの構築"""
+        self.logger.info("BM25インデックスを構築中...")
+        
+        # 全ドキュメントをトークン化
+        tokenized_docs = []
+        for doc in self.documents:
+            # ページコンテンツと メタデータを結合
+            content = doc.page_content
+            if doc.metadata:
+                # 重要なメタデータ（アイテム名、分別方法など）を内容に追加
+                item_name = doc.metadata.get('item_name', '')
+                category = doc.metadata.get('category', '')
+                notes = doc.metadata.get('notes', '')
+                
+                combined_content = f"{content} {item_name} {category} {notes}"
+            else:
+                combined_content = content
+                
+            tokens = self.tokenizer(combined_content)
+            tokenized_docs.append(tokens)
+        
+        bm25 = BM25Okapi(tokenized_docs)
+        self.logger.info(f"BM25インデックス構築完了: {len(tokenized_docs)} ドキュメント")
+        
+        return bm25
+    
+    def _normalize_scores(self, scores: List[float]) -> List[float]:
+        """スコアの正規化 (0-1)"""
+        if not scores:
+            return scores
+            
+        min_score = min(scores)
+        max_score = max(scores)
+        
+        if max_score == min_score:
+            return [1.0] * len(scores)
+        
+        return [(score - min_score) / (max_score - min_score) for score in scores]
+    
+    def hybrid_search(self, query: str, k: int = 10) -> List[Document]:
+        """
+        ハイブリッド検索の実行
+        
+        Args:
+            query: 検索クエリ
+            k: 返すドキュメント数
+            
+        Returns:
+            スコア順にソートされたドキュメントリスト
+        """
+        self.logger.info(f"ハイブリッド検索実行: '{query}' (k={k})")
+        
+        # 1. BM25検索
+        bm25_scores = self._bm25_search(query, k * 2)  # より多く取得して多様性確保
+        
+        # 2. ベクトル検索 (BGE-M3)
+        vector_results = self._vector_search(query, k * 2)
+        
+        # 3. スコアの正規化と結合
+        hybrid_scores = self._combine_scores(bm25_scores, vector_results, k)
+        
+        # 4. 上位k件を返す
+        top_docs = [doc for doc, score in hybrid_scores[:k]]
+        
+        self.logger.info(f"ハイブリッド検索完了: {len(top_docs)} 件取得")
+        return top_docs
+    
+    def _bm25_search(self, query: str, k: int) -> Dict[int, float]:
+        """BM25検索"""
+        # クエリの同義語拡張
+        expanded_queries = expand_query_with_synonyms(query)
+        
+        # 各拡張クエリでスコア計算
+        combined_scores = defaultdict(float)
+        
+        for expanded_query in expanded_queries:
+            tokenized_query = self.tokenizer(expanded_query)
+            if not tokenized_query:
+                continue
+                
+            scores = self.bm25.get_scores(tokenized_query)
+            
+            # 重み付き加算（元クエリに最大重み）
+            weight = 1.0 if expanded_query == query else 0.7
+            
+            for doc_idx, score in enumerate(scores):
+                combined_scores[doc_idx] += score * weight
+        
+        # 上位k件のインデックスとスコア
+        sorted_scores = sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)
+        return dict(sorted_scores[:k])
+    
+    def _vector_search(self, query: str, k: int) -> List[Tuple[Document, float]]:
+        """ベクトル検索 (BGE-M3)"""
+        try:
+            # ChromaDBのsimilarity_search_with_scoreを使用
+            results = self.chroma_retriever.similarity_search_with_score(query, k=k)
+            return results
+        except Exception as e:
+            self.logger.error(f"ベクトル検索エラー: {e}")
+            return []
+    
+    def _combine_scores(self, bm25_scores: Dict[int, float], vector_results: List[Tuple[Document, float]], k: int) -> List[Tuple[Document, float]]:
+        """BM25とベクトルスコアの結合"""
+        
+        # BM25スコアの正規化
+        if bm25_scores:
+            bm25_values = list(bm25_scores.values())
+            normalized_bm25 = self._normalize_scores(bm25_values)
+            bm25_normalized = dict(zip(bm25_scores.keys(), normalized_bm25))
+        else:
+            bm25_normalized = {}
+        
+        # ベクトル検索スコアの正規化（距離スコアを類似度スコアに変換）
+        vector_scores = {}
+        if vector_results:
+            # ChromaDBは距離を返すので、類似度に変換 (1 / (1 + distance))
+            distances = [score for doc, score in vector_results]
+            similarities = [1 / (1 + dist) if dist >= 0 else 1.0 for dist in distances]
+            normalized_vector = self._normalize_scores(similarities)
+            
+            for (doc, _), norm_score in zip(vector_results, normalized_vector):
+                # ドキュメントIDまたはインデックスを取得
+                doc_id = doc.metadata.get('id')
+                if doc_id is not None:
+                    doc_idx = self.doc_id_to_index.get(doc_id)
+                else:
+                    # IDがない場合、内容でマッチング（非効率だが仕方なし）
+                    doc_idx = None
+                    for i, candidate_doc in enumerate(self.documents):
+                        if candidate_doc.page_content == doc.page_content:
+                            doc_idx = i
+                            break
+                
+                if doc_idx is not None:
+                    vector_scores[doc_idx] = norm_score
+        
+        # ハイブリッドスコア計算
+        hybrid_scores = {}
+        all_doc_indices = set(bm25_normalized.keys()) | set(vector_scores.keys())
+        
+        for doc_idx in all_doc_indices:
+            bm25_score = bm25_normalized.get(doc_idx, 0.0)
+            vector_score = vector_scores.get(doc_idx, 0.0)
+            
+            # 重み付き結合
+            hybrid_score = (1 - self.alpha) * bm25_score + self.alpha * vector_score
+            hybrid_scores[doc_idx] = hybrid_score
+        
+        # ドキュメントとスコアのペアを作成
+        doc_score_pairs = []
+        for doc_idx, score in hybrid_scores.items():
+            if 0 <= doc_idx < len(self.documents):
+                doc_score_pairs.append((self.documents[doc_idx], score))
+        
+        # スコア順にソート
+        doc_score_pairs.sort(key=lambda x: x[1], reverse=True)
+        
+        return doc_score_pairs[:k]
+    
+    def get_retrieval_stats(self) -> Dict[str, Any]:
+        """検索統計情報"""
+        return {
+            "total_documents": len(self.documents),
+            "bm25_ready": self.bm25 is not None,
+            "vector_ready": self.chroma_retriever is not None,
+            "alpha": self.alpha,
+            "tokenizer": "jieba"
+        }
+
 # ===== Index manifest （埋め込みの一貫性チェック）=====
 MANIFEST_FILE = "manifest.json"
 MANIFEST_STRATEGY = "bge_query_passage_prefix_v1"
@@ -208,9 +434,13 @@ class KitakyushuWasteRAGService:
         self._load_csv_dir()
         _write_manifest()
 
+        # ハイブリッド検索の初期化
+        self.hybrid_retriever = None
+        self._initialize_hybrid_search()
+
         self.logger.info(
             f"RAG ready | EMBED_MODEL={EMBED_MODEL} | LLM_MODEL={LLM_MODEL} | "
-            f"CHROMA_DIR={CHROMA_DIR} | DATA_DIR={DATA_DIR}"
+            f"CHROMA_DIR={CHROMA_DIR} | DATA_DIR={DATA_DIR} | Hybrid Search: {'Enabled' if self.hybrid_retriever else 'Disabled'}"
         )
 
     # ========= CSV 読み込み =========
@@ -275,6 +505,66 @@ class KitakyushuWasteRAGService:
                 txt = txt[:limit_each] + "…"
             chunks.append(f"[候補{i}]\n{txt}")
         return "\n\n".join(chunks)
+
+    def _initialize_hybrid_search(self):
+        """ハイブリッド検索の初期化"""
+        try:
+            # 全ドキュメントを取得
+            all_docs = []
+            collection = self.vectorstore._collection
+            if collection is not None:
+                # ChromaDBから全ドキュメントを取得
+                result = collection.get()
+                if result and 'documents' in result:
+                    for i, content in enumerate(result['documents']):
+                        metadata = result.get('metadatas', [{}])[i] if i < len(result.get('metadatas', [])) else {}
+                        doc = Document(page_content=content, metadata=metadata)
+                        all_docs.append(doc)
+            
+            if all_docs:
+                # ChromaDBのretrieverを作成
+                chroma_retriever = self.vectorstore.as_retriever(search_kwargs={"k": DEFAULT_K * 2})
+                
+                # ハイブリッドリトリーバーを初期化
+                self.hybrid_retriever = HybridRetriever(
+                    chroma_retriever=chroma_retriever,
+                    documents=all_docs,
+                    alpha=0.6  # ベクトル検索を60%、BM25を40%の重みで結合
+                )
+                self.logger.info(f"ハイブリッド検索初期化完了: {len(all_docs)} ドキュメント")
+            else:
+                self.logger.warning("ドキュメントが見つからないため、ハイブリッド検索を無効化")
+                self.hybrid_retriever = None
+                
+        except Exception as e:
+            self.logger.error(f"ハイブリッド検索初期化エラー: {e}")
+            self.hybrid_retriever = None
+
+    def hybrid_similarity_search(self, query: str, k: int = DEFAULT_K, use_hybrid: bool = True) -> List[Document]:
+        """
+        ハイブリッド検索（BM25 + BGE-M3）またはベクトル検索のみを実行
+        
+        Args:
+            query: 検索クエリ
+            k: 返すドキュメント数
+            use_hybrid: Trueならハイブリッド検索、Falseならベクトル検索のみ
+        """
+        k = max(K_MIN, min(k or DEFAULT_K, K_MAX))
+        
+        self.logger.info(f"検索リクエスト: query='{query}', k={k}, use_hybrid={use_hybrid}, hybrid_retriever={self.hybrid_retriever is not None}")
+        
+        if use_hybrid and self.hybrid_retriever:
+            self.logger.info(f"🔥 ハイブリッド検索実行: '{query}' (k={k})")
+            try:
+                results = self.hybrid_retriever.hybrid_search(query, k)
+                self.logger.info(f"✅ ハイブリッド検索成功: {len(results)} 件取得")
+                return results
+            except Exception as e:
+                self.logger.error(f"❌ ハイブリッド検索エラー、ベクトル検索にフォールバック: {e}")
+                return self.similarity_search(query, k)
+        else:
+            self.logger.info(f"📊 ベクトル検索実行: '{query}' (k={k})")
+            return self.similarity_search(query, k)
 
     def similarity_search(self, query: str, k: int = DEFAULT_K) -> List[Document]:
         k = max(K_MIN, min(k or DEFAULT_K, K_MAX))
@@ -397,9 +687,25 @@ class KitakyushuWasteRAGService:
         return (res.get("message", {}) or {}).get("content", "")
 
     # ========= ユーザーAPI =========
-    def blocking_query(self, query: str, k: int = DEFAULT_K) -> Dict[str, Any]:
+    def blocking_query(self, query: str, k: int = DEFAULT_K, use_hybrid: bool = True) -> Dict[str, Any]:
+        """
+        ブロッキング検索クエリ
+        
+        Args:
+            query: 検索クエリ
+            k: 検索するドキュメント数
+            use_hybrid: ハイブリッド検索を使用するかどうか
+        """
         t0 = time.time()
-        docs = self.similarity_search(query, k=k)
+        
+        # ハイブリッド検索または従来のベクトル検索を選択
+        if use_hybrid and self.hybrid_retriever:
+            docs = self.hybrid_similarity_search(query, k=k, use_hybrid=True)
+            search_method = "hybrid"
+        else:
+            docs = self.similarity_search(query, k=k)  
+            search_method = "vector_only"
+            
         ctx = self._format_docs(docs)
 
         prompt = (
@@ -423,14 +729,34 @@ class KitakyushuWasteRAGService:
             return {
                 "response": answer,
                 "documents": len(docs),
+                "search_method": search_method,
+                "hybrid_enabled": self.hybrid_retriever is not None,
                 "latency": time.time() - t0,
                 "timestamp": datetime.now().isoformat(),
             }
         except Exception as e:
-            return {"response": f"エラー: {e}", "documents": len(docs), "latency": time.time() - t0}
+            return {
+                "response": f"エラー: {e}", 
+                "documents": len(docs), 
+                "search_method": search_method,
+                "latency": time.time() - t0
+            }
 
-    async def streaming_query(self, query: str, k: int = DEFAULT_K) -> AsyncGenerator[str, None]:
-        docs = self.similarity_search(query, k=k)
+    async def streaming_query(self, query: str, k: int = DEFAULT_K, use_hybrid: bool = True) -> AsyncGenerator[str, None]:
+        """
+        ストリーミング検索クエリ
+        
+        Args:
+            query: 検索クエリ
+            k: 検索するドキュメント数  
+            use_hybrid: ハイブリッド検索を使用するかどうか
+        """
+        # ハイブリッド検索または従来のベクトル検索を選択
+        if use_hybrid and self.hybrid_retriever:
+            docs = self.hybrid_similarity_search(query, k=k, use_hybrid=True)
+        else:
+            docs = self.similarity_search(query, k=k)
+            
         ctx = self._format_docs(docs)
 
         prompt = (
@@ -470,6 +796,27 @@ class KitakyushuWasteRAGService:
                     yield content
         except Exception as e:
             yield f"エラー: {e}"
+
+    def get_hybrid_search_stats(self) -> Dict[str, Any]:
+        """ハイブリッド検索の統計情報を取得"""
+        if not self.hybrid_retriever:
+            return {
+                "enabled": False,
+                "reason": "ハイブリッド検索が初期化されていません"
+            }
+        
+        hybrid_stats = self.hybrid_retriever.get_retrieval_stats()
+        return {
+            "enabled": True,
+            "stats": hybrid_stats,
+            "alpha": hybrid_stats.get("alpha", 0.5),
+            "description": {
+                "alpha": "ハイブリッド重み (0.0=BM25のみ, 1.0=ベクトル検索のみ)",
+                "bm25": "キーワードベース検索 (TF-IDF風の語彙マッチング)",
+                "vector": "セマンティック検索 (BGE-M3埋め込み)",
+                "tokenizer": "日本語分割器 (jieba)"
+            }
+        }
 
     def get_data_sources(self) -> Dict[str, Any]:
         """データソースの一覧と統計情報を取得"""
