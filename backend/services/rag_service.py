@@ -141,14 +141,20 @@ def extract_item_like(query: str) -> str:
     tmp = strip_quotes_and_brackets(tmp)
     return tmp[:32].strip() if tmp else q
 
+<<<<<<< HEAD
 # ===== Embeddings ラッパ（複数モデル対応）=====
 class FlexibleEmbeddings:
+=======
+# ===== Embeddings ラッパ（BGE向けに query/passsage 前置詞を付ける）=====
+class BGEInstructEmbeddings:
+>>>>>>> 9036e6bfd187fe948086e75a210910e0a1def89b
     """
     LangChain の埋め込みIF互換:
     - embed_documents(texts: List[str]) -> List[List[float]]
     - embed_query(text: str) -> List[float]
     """
     def __init__(self, model: str):
+<<<<<<< HEAD
         self.model = model
         self.logger = get_logger(__name__)
         
@@ -197,6 +203,16 @@ class FlexibleEmbeddings:
                 return self.inner.embed_query(f"query: {clean_text(text)}")
             else:
                 return self.inner.embed_query(clean_text(text))
+=======
+        self.inner = OllamaEmbeddings(model=model)
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        texts2 = [f"passage: {clean_text(t)}" for t in texts]
+        return self.inner.embed_documents(texts2)
+
+    def embed_query(self, text: str) -> List[float]:
+        return self.inner.embed_query(f"query: {clean_text(text)}")
+>>>>>>> 9036e6bfd187fe948086e75a210910e0a1def89b
 
 # ===== ハイブリッド検索クラス =====
 class HybridRetriever:
@@ -459,7 +475,11 @@ class KitakyushuWasteRAGService:
     def __init__(self):
         self.logger = setup_logger(__name__)
 
+<<<<<<< HEAD
         self.embeddings = FlexibleEmbeddings(model=EMBED_MODEL)
+=======
+        self.embeddings = BGEInstructEmbeddings(model=EMBED_MODEL)
+>>>>>>> 9036e6bfd187fe948086e75a210910e0a1def89b
 
         if os.path.isdir(CHROMA_DIR) and _manifest_mismatch():
             self.logger.warning("Embedding 設定が既存インデックスと不一致のため、再構築します。")
@@ -801,17 +821,29 @@ class KitakyushuWasteRAGService:
         ctx = self._format_docs(docs)
 
         prompt = (
+<<<<<<< HEAD
             "あなたは北九州市の優秀なごみ分別案内の専門AIアシスタントです。"
+=======
+            "あなたは北九州市のごみ分別案内の専門AIアシスタントです。"
+>>>>>>> 9036e6bfd187fe948086e75a210910e0a1def89b
             "北九州市民の皆様に正確で分かりやすいごみ分別情報を提供することが使命です。"
             "以下の参照データの範囲内で、日本語で簡潔かつ正確に回答してください。"
             "\n回答形式:"
             "「出し方: [具体的な分別方法]」を最初に明記し、必要に応じて「備考: [追加情報]」を補足してください。"
             "\n重要なルール:"
+<<<<<<< HEAD
             "1. 質問された品目に関連する情報を回答してください（無関係な品目情報は含めない）"
             "2. データベースに該当情報がない場合は「申し訳ございませんが、該当する情報がありません。北九州市のホームページ（https://www.city.kitakyushu.lg.jp/）でご確認いただくか、お住まいの区役所環境課にお問い合わせください。」と回答してください"
             "3. 回答は簡潔で分かりやすく、必ず「出し方」を含めてください"
             "4. 推測や一般的なアドバイスは厳禁です。データベースに基づいた正確な情報のみを提供してください"
             "5. 複数の関連品目がある場合は、質問に最も適合するものを選んで回答してください、必要に応じて類似の品目も補足してください"
+=======
+            "1. 質問された品目に関連する情報のみを回答してください（無関係な品目情報は含めない）"
+            "2. データベースに該当情報がない場合は「申し訳ございませんが、該当する情報がありません。北九州市のホームページ（https://www.city.kitakyushu.lg.jp/）でご確認いただくか、お住まいの区役所環境課にお問い合わせください。」と回答してください"
+            "3. 回答は簡潔で分かりやすく、必ず「出し方」を含めてください"
+            "4. 推測や一般的なアドバイスは厳禁です。データベースに基づいた正確な情報のみを提供してください"
+            "5. 複数の関連品目がある場合は、質問に最も適合するもののみを選んで回答してください"
+>>>>>>> 9036e6bfd187fe948086e75a210910e0a1def89b
             "6. エリア情報がある場合は、該当する地区名も併記してください"
             f"\n\n質問:\n{clean_text(query)}\n\n参照データ:\n{ctx}\n\n回答:"
         )
