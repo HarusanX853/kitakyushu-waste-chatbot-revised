@@ -1,0 +1,142 @@
+# 要件定義
+
+目的：北九州市のごみの捨て方を教えてくれるチャットボットの開発をおこなう
+
+ユーザー：北九州市民
+
+入力：テキスト(将来的に音声も)
+
+出力：テキスト(将来的に音声も)
+
+LLMの役割定義：ユーザが入力した品目(ごみ)に対して出し方と備考を出力する
+
+●アーキテクチャ
+　フロントエンド：Streamlit
+
+　バックエンド連携：python(REST API)
+　LLM推論: Llama-3.1-Swallow-8B (Instruct v0.5 の GGUF 形式)
+
+    モデル形式：Ollama
+　DB:　ChromaDB(ナレッジファイルの保存、外部データのファイル)
+
+　ログ：JSON（ファイルorMySQL）
+
+　Streaming表示：
+
+　速度測定：レイテンシ（開始までの時間）とトークン生成速度を計測する
+
+　文章更新フロー：
+
+●LLMの選定(具体的に)
+
+性能が高い、推論がおそくてもよい
+
+規模：中規模
+Llama-3.1-Swallow-8B (Instruct v0.5 の GGUF 形式)
+
+**機能要件**
+
+●WebUI機能
+
+- ナレッジファイルのアップロード機能
+- 検索対象データファイル一覧表示
+- VRAM使用量のリアルタイム表示
+- レスポンシブデザイン対応
+- 生成速度測定機能（開始〜終了時間）
+
+●出力機能
+
+- Streamingモードでの回答生成
+- Blockingモード（完了待機）対応
+- JSONファイル形式ログ出力
+
+●RAGあり(LangChain)
+
+●LangChainの活用
+
+**●エラーハンドリング要件**（RAGに該当する情報が無い場合、どう回答するか→該当する情報がありません。)
+
+**非機能要件**
+
+- パフォーマンス計測：
+- ログ形式：.log
+- レスポンシブデザイン→デバイスが変わっても画面が大きくかわらないようにする
+- PIA対策の拡張性：ユーザーの情報を保管しない
+- GPU推論のコンソール確認：
+- 再インデックスのタイミング：即時
+- スペック：GPU搭載メモリ24GB、メモリ128GB、OSUbuntu 22.04LTS
+- インフラ設計
+サーバー：オンプレ
+セキュリティ：HTTPS
+
+●音声認識に使用するモデル
+
+https://zenn.dev/circlemouth/articles/whisper-lm-studio-settings
+
+---
+
+●ルール
+
+- L4サーバーにホストしたローカルLLMを用いて用いて回答する事
+- PIA対策の拡張性を意識して実装すること
+- DifyなどGUIのみで構築可能なフレームワークは使用禁止
+- GPUで行われた推論の結果をConsolから確認する
+- 分別早見表の情報をもとに質問に回答できるようにする(Streamingモードで実装する事)
+- WebUI上での生成開始から生成終了までの速度を測定
+- Blockingモード（処理が完了するまで次の処理にすすまない）で回答を生成→生成結果が出るまでプログラムを待機させるhttps://note.com/shimap_sampo/n/n65a04e2e7da0
+　入出力ログの保存
+　リクエスト形式{”prompt”:”hogehoge”}
+　レスポンス形式　blocking形式のレスポンス{”reply”:”hogehoge”}
+　エンドポイント　https://<teamip>:8000/api/bot/respond ¥
+　curl -X POST
+　https://<teamip>:8000/api/bot/respond/ ¥
+　-H “Content-Type:application/json/” ¥
+　-d ‘{”prompt”::You are now SYSTEM…”}’
+　リクエスト形式{”prompt”:”hogehoge”}
+- Web UIからナレッジファイルをアップロードできるようにする
+- 検索対象にした外部データのファイル一覧をWebUIに表示する
+- LLMが使用しているVRAM使用量をリアルタイムでWebUIに表示する
+
+●アプリ機能以外で必要なこと
+
+①コンソール確認：コンソール確認でGPUの負荷や速度は問題ないか？を確認する、以下の項目を確認すること
+
+- **GPU Utilization (%)**：GPUの稼働率（高ければ推論処理中）
+- **Memory-Usage (MiB)**：VRAM使用量（モデルがVRAMに収まっているか）
+- **Temperature (℃)**：温度（高すぎるとサーマルスロットリングの恐れ）
+- **Power Usage (W)**：消費電力（L4のTDP内で収まっているか）
+
+**WebUIでVRAM使用量や速度を表示**しつつ、
+
+**コンソールで nvidia-smi / nvtop を叩いてクロスチェック**する
+
+WebUIからのアップロードはその基盤を自分たちで作るのか→自分たちでシンプルに
+
+ベクトルDBを考え直す→ChromaDB
+
+ログ出力の際JSONファイル形式でいいのか、データの圧迫などの課題→
+
+ローカルLLMを用いたChatBotの事例検索
+
+タスクを明確にした上でスケジューリング→フロント＆バック(1名)、チューニング(1名)、DB(1名)、**LLM(全員)、**デプロイ方法を考える(全員)
+
+LLMを動かすことを目標に
+
+参考記事
+ollama,gemini
+https://zenn.dev/cloud_ace/articles/gemma3-ollama-openwebui-rag
+
+ollama,langchain,chromadb,rag
+https://deepakdroid.medium.com/how-i-built-a-local-chatbot-that-understands-my-notes-using-rag-ollama-e4b762892082
+
+swallow
+https://zenn.dev/hellorusk/books/e56548029b391f/viewer/ollama2
+
+ollama,llma
+https://qiita.com/mushipi/items/578cc209d7646833e2e8
+
+LangChain RAG
+https://hellocraftai.com/blog/110/
+
+ChromaDB
+https://zenn.dev/rounda_blog/articles/77942c2929f69e

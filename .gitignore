@@ -1,0 +1,82 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+logs/*.log
+logs/chat_log.json
+*.log
+
+# Database
+chroma_db/
+*.db
+*.sqlite
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Upload files (except sample)
+data/uploaded_*
+
+# Model files (optional - uncomment if you don't want to track large model files)
+# *.bin
+# *.safetensors
+# *.onnx
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# Docker
+.dockerignore
+
+# Tests
+test_*.py
+*_test.py
+tests/
+
+# Documentation builds
+docs/_build/
